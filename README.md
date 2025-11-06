@@ -1,9 +1,11 @@
-# Vue + Vite + FastAPI demo
+# Calculadora de bonos con Vue y FastAPI
 
-Este repositorio contiene un ejemplo completo de frontend creado con Vue 3 y Vite que consulta una
-API pública implementada con FastAPI. El objetivo es mostrar cómo estructurar un proyecto práctico
-que realice peticiones HTTP, maneje estados de carga/errores, permita filtrar resultados y ofrezca
-datos locales de respaldo cuando la API no responde.
+Este repositorio incluye un ejemplo funcional compuesto por:
 
-Consulta el directorio [`frontend`](./frontend) para instrucciones detalladas de instalación y
-uso.
+- **Frontend** construido con Vue 3 + Vite que ofrece un formulario interactivo para estimar bonos
+  corporativos, visualizar el desglose del cálculo en tiempo real y exportar los resultados a PDF.
+- **Backend** desarrollado con FastAPI que expone un endpoint local `/api/bonus` utilizado por la
+  interfaz para realizar los cálculos de manera consistente.
+
+Sigue las instrucciones del directorio [`frontend`](./frontend) para levantar la aplicación web y del
+apartado [`backend`](./backend) para ejecutar el servidor FastAPI de prueba.

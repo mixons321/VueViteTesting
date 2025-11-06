@@ -1,66 +1,114 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { jsPDF } from 'jspdf'
 
-import JobCard from './components/JobCard.vue'
-import StateMessage from './components/StateMessage.vue'
-import { DEFAULT_API_URL, fetchJobs, getFallbackJobs } from './services/jobsApi'
+import { DEFAULT_API_URL, calculateBonus } from './services/bonusApi'
 
-const jobs = ref([])
 const apiUrl = ref(import.meta.env.VITE_FASTAPI_URL || DEFAULT_API_URL)
 const isLoading = ref(false)
 const errorMessage = ref('')
-const dataSource = ref({ source: 'api', url: apiUrl.value })
 const lastUpdatedAt = ref('')
-const searchTerm = ref('')
+const bonusResult = ref(null)
 
-const totalJobs = computed(() => jobs.value.length)
-
-const filteredJobs = computed(() => {
-  const term = searchTerm.value.trim().toLowerCase()
-  if (!term) {
-    return jobs.value
-  }
-
-  return jobs.value.filter((job) => {
-    const haystack = [job.title, job.company, job.location, job.description]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-
-    return haystack.includes(term)
-  })
+const form = reactive({
+  baseSalary: 2500,
+  performanceRating: 3.5,
+  yearsAtCompany: 2,
+  dependents: 0,
+  extraAwards: 0,
 })
 
-const formattedUpdatedAt = computed(() => {
-  if (!lastUpdatedAt.value) return ''
+const currencyFormatter = new Intl.NumberFormat('es-ES', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 2,
+})
 
+const numberFormatter = new Intl.NumberFormat('es-ES', {
+  maximumFractionDigits: 2,
+})
+
+const isFormValid = computed(() => {
+  return (
+    form.baseSalary > 0 &&
+    form.performanceRating >= 0 &&
+    form.performanceRating <= 5 &&
+    form.yearsAtCompany >= 0 &&
+    form.dependents >= 0 &&
+    Number.isInteger(form.dependents) &&
+    form.extraAwards >= 0
+  )
+})
+
+const formErrors = computed(() => {
+  const errors = []
+  if (form.baseSalary <= 0) {
+    errors.push('El salario base debe ser mayor a 0 USD.')
+  }
+  if (form.performanceRating < 0 || form.performanceRating > 5) {
+    errors.push('La calificación de desempeño debe estar entre 0 y 5.')
+  }
+  if (form.yearsAtCompany < 0) {
+    errors.push('Los años en la empresa no pueden ser negativos.')
+  }
+  if (form.dependents < 0) {
+    errors.push('Los dependientes no pueden ser negativos.')
+  }
+  if (!Number.isInteger(form.dependents)) {
+    errors.push('Los dependientes deben ser un número entero.')
+  }
+  if (form.extraAwards < 0) {
+    errors.push('Las bonificaciones adicionales no pueden ser negativas.')
+  }
+
+  return errors
+})
+
+const formattedBreakdown = computed(() => {
+  if (!bonusResult.value) return []
+
+  const breakdown = bonusResult.value.breakdown
+
+  return [
+    { label: 'Bono base (10% del salario)', value: formatCurrency(breakdown.base_bonus) },
+    {
+      label: 'Ajuste por desempeño',
+      value: formatCurrency(breakdown.performance_adjustment),
+    },
+    { label: 'Reconocimiento por antigüedad', value: formatCurrency(breakdown.loyalty_bonus) },
+    {
+      label: 'Apoyo familiar',
+      value: formatCurrency(breakdown.family_support),
+    },
+    { label: 'Bonificaciones adicionales', value: formatCurrency(breakdown.extra_awards) },
+  ]
+})
+
+function formatCurrency(amount) {
+  return currencyFormatter.format(Number(amount) || 0)
+}
+
+function formatNumber(amount) {
+  return numberFormatter.format(Number(amount) || 0)
+}
+
+function formatDate(value) {
+  if (!value) return ''
   try {
-    const formatter = new Intl.DateTimeFormat('es-ES', {
+    return new Intl.DateTimeFormat('es-ES', {
       dateStyle: 'medium',
       timeStyle: 'short',
-    })
-    return formatter.format(new Date(lastUpdatedAt.value))
+    }).format(new Date(value))
   } catch (error) {
-    console.warn('No fue posible formatear la fecha de actualización', error)
+    console.warn('No fue posible formatear la fecha', error)
     return ''
   }
-})
+}
 
-const sourceLabel = computed(() => {
-  if (dataSource.value.source === 'fallback') {
-    return 'Datos de ejemplo locales'
-  }
-
-  return dataSource.value.url || 'API configurada'
-})
-
-async function loadJobs({ useFallback = false } = {}) {
-  if (useFallback) {
-    const fallback = getFallbackJobs()
-    jobs.value = fallback.jobs
-    dataSource.value = fallback.meta
-    errorMessage.value = ''
-    lastUpdatedAt.value = new Date().toISOString()
+async function requestBonus() {
+  if (!isFormValid.value) {
+    bonusResult.value = null
+    errorMessage.value = 'Completa los datos correctamente antes de calcular.'
     return
   }
 
@@ -68,20 +116,20 @@ async function loadJobs({ useFallback = false } = {}) {
   errorMessage.value = ''
 
   try {
-    const response = await fetchJobs(apiUrl.value)
-    jobs.value = response.jobs
-    dataSource.value = response.meta
-    lastUpdatedAt.value = new Date().toISOString()
-  } catch (error) {
-    errorMessage.value =
-      error instanceof Error
-        ? error.message
-        : 'No fue posible comunicarse con la API pública de FastAPI.'
+    const payload = {
+      base_salary: Number(form.baseSalary),
+      performance_rating: Number(form.performanceRating),
+      years_at_company: Number(form.yearsAtCompany),
+      dependents: Number(form.dependents),
+      extra_awards: Number(form.extraAwards),
+    }
 
-    const fallback = getFallbackJobs()
-    jobs.value = fallback.jobs
-    dataSource.value = fallback.meta
-    lastUpdatedAt.value = new Date().toISOString()
+    const response = await calculateBonus(apiUrl.value, payload)
+    bonusResult.value = response
+    lastUpdatedAt.value = response.calculatedAt
+  } catch (error) {
+    bonusResult.value = null
+    errorMessage.value = error instanceof Error ? error.message : 'Ocurrió un error inesperado.'
   } finally {
     isLoading.value = false
   }
@@ -89,307 +137,511 @@ async function loadJobs({ useFallback = false } = {}) {
 
 function handleSubmit(event) {
   event.preventDefault()
-  loadJobs()
+  requestBonus()
 }
 
-function resetAndReload() {
-  apiUrl.value = DEFAULT_API_URL
-  loadJobs()
+function downloadPdf() {
+  if (!bonusResult.value) return
+
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+  const marginX = 56
+  let cursorY = 72
+
+  doc.setFontSize(20)
+  doc.text('Resumen de cálculo de bono', marginX, cursorY)
+
+  cursorY += 28
+  doc.setFontSize(12)
+  doc.setTextColor('#4a5568')
+  doc.text(`Generado: ${formatDate(bonusResult.value.calculatedAt)}`, marginX, cursorY)
+
+  cursorY += 32
+  doc.setFontSize(14)
+  doc.setTextColor('#1f2933')
+  doc.text('Datos ingresados', marginX, cursorY)
+
+  const inputRows = [
+    [`Salario base`, formatCurrency(bonusResult.value.inputs.base_salary)],
+    ['Desempeño', formatNumber(bonusResult.value.inputs.performance_rating)],
+    ['Años en la empresa', formatNumber(bonusResult.value.inputs.years_at_company)],
+    ['Dependientes', String(bonusResult.value.inputs.dependents)],
+    ['Bonos adicionales', formatCurrency(bonusResult.value.inputs.extra_awards)],
+  ]
+
+  cursorY += 16
+  doc.setFontSize(12)
+  inputRows.forEach(([label, value]) => {
+    doc.text(`${label}: ${value}`, marginX, cursorY)
+    cursorY += 18
+  })
+
+  cursorY += 10
+  doc.setFontSize(14)
+  doc.text('Desglose', marginX, cursorY)
+
+  cursorY += 20
+  doc.setFontSize(12)
+  formattedBreakdown.value.forEach((item) => {
+    doc.text(`${item.label}: ${item.value}`, marginX, cursorY)
+    cursorY += 18
+  })
+
+  cursorY += 14
+  doc.setFontSize(16)
+  doc.setTextColor('#0b7285')
+  doc.text(`Total estimado: ${formatCurrency(bonusResult.value.totalBonus)}`, marginX, cursorY)
+
+  if (bonusResult.value.recommendations?.length) {
+    cursorY += 32
+    doc.setFontSize(14)
+    doc.setTextColor('#1f2933')
+    doc.text('Recomendaciones', marginX, cursorY)
+
+    cursorY += 20
+    doc.setFontSize(12)
+    doc.setTextColor('#4a5568')
+    bonusResult.value.recommendations.forEach((message) => {
+      const split = doc.splitTextToSize(`• ${message}`, 482)
+      doc.text(split, marginX, cursorY)
+      cursorY += split.length * 16
+    })
+  }
+
+  doc.save('resumen-bono.pdf')
 }
 
-onMounted(() => {
-  loadJobs()
-})
+let debounceHandle
+watch(
+  () => ({
+    baseSalary: form.baseSalary,
+    performanceRating: form.performanceRating,
+    yearsAtCompany: form.yearsAtCompany,
+    dependents: form.dependents,
+    extraAwards: form.extraAwards,
+    apiUrl: apiUrl.value,
+  }),
+  (current) => {
+    clearTimeout(debounceHandle)
+
+    if (!isFormValid.value) {
+      bonusResult.value = null
+      return
+    }
+
+    debounceHandle = setTimeout(() => {
+      if (current.apiUrl === apiUrl.value) {
+        requestBonus()
+      }
+    }, 350)
+  },
+  { deep: true, immediate: true }
+)
 </script>
 
 <template>
   <main class="page">
     <header class="page__header">
-      <h1 class="page__title">Explorador de empleos con FastAPI</h1>
+      <h1 class="page__title">Calculadora de bonos con FastAPI</h1>
       <p class="page__description">
-        Esta aplicación construida con Vue 3 + Vite consulta un endpoint público de FastAPI para
-        mostrar oportunidades laborales. Puedes cambiar la URL del servicio, filtrar resultados y
-        utilizar datos locales de ejemplo en caso de que la API no esté disponible.
+        Ingresa los datos del colaborador para estimar un bono usando un servicio FastAPI local. La calculadora se
+        actualiza en tiempo real y puedes exportar un reporte en PDF.
       </p>
     </header>
 
-    <form class="controls" @submit="handleSubmit">
-      <label class="controls__label" for="api-url">Endpoint de la API</label>
-      <div class="controls__row">
-        <input
-          id="api-url"
-          v-model="apiUrl"
-          class="controls__input"
-          type="url"
-          inputmode="url"
-          autocomplete="off"
-          placeholder="https://tu-api-fastapi.com/api/v1/jobs"
-          aria-describedby="api-help"
-        />
-        <button class="controls__button controls__button--primary" type="submit">
-          Consultar API
-        </button>
-        <button
-          class="controls__button"
-          type="button"
-          @click="loadJobs({ useFallback: true })"
-        >
-          Usar datos de ejemplo
-        </button>
-      </div>
-      <p id="api-help" class="controls__help">
-        Por defecto se utiliza <code>{{ DEFAULT_API_URL }}</code>. Puedes restablecerlo rápidamente.
-        <button class="controls__link" type="button" @click="resetAndReload">Restablecer</button>
-      </p>
-    </form>
+    <section class="layout">
+      <form class="card" @submit="handleSubmit">
+        <h2 class="card__title">Datos del colaborador</h2>
 
-    <section class="toolbar" aria-label="Herramientas de filtrado">
-      <label class="toolbar__label" for="search">Buscar</label>
-      <input
-        id="search"
-        v-model="searchTerm"
-        class="toolbar__search"
-        type="search"
-        placeholder="Filtra por título, empresa o ubicación"
-      />
-      <div class="toolbar__meta">
-        <span><strong>{{ filteredJobs.length }}</strong> de {{ totalJobs }} resultados</span>
-        <span><strong>Fuente:</strong> {{ sourceLabel }}</span>
-        <span v-if="formattedUpdatedAt"><strong>Actualizado:</strong> {{ formattedUpdatedAt }}</span>
-      </div>
-    </section>
+        <div class="field">
+          <label class="field__label" for="base-salary">Salario base mensual (USD)</label>
+          <input
+            id="base-salary"
+            v-model.number="form.baseSalary"
+            type="number"
+            min="0"
+            step="100"
+            class="field__input"
+            placeholder="Ej: 2500"
+            required
+          />
+        </div>
 
-    <StateMessage
-      v-if="isLoading"
-      title="Consultando la API…"
-      description="Obteniendo la información de empleos desde FastAPI."
-    >
-      <span class="loader" aria-hidden="true"></span>
-    </StateMessage>
+        <div class="field">
+          <label class="field__label" for="performance">Calificación de desempeño (0 a 5)</label>
+          <input
+            id="performance"
+            v-model.number="form.performanceRating"
+            type="number"
+            min="0"
+            max="5"
+            step="0.1"
+            class="field__input"
+            placeholder="Ej: 3.5"
+            required
+          />
+        </div>
 
-    <template v-else>
-      <StateMessage
-        v-if="errorMessage"
-        variant="error"
-        title="No pudimos obtener datos frescos de la API"
-        :description="errorMessage"
-      >
-        <div class="state-actions" role="group">
-          <button class="controls__button controls__button--primary" type="button" @click="loadJobs()">
-            Reintentar
+        <div class="field">
+          <label class="field__label" for="years">Años en la empresa</label>
+          <input
+            id="years"
+            v-model.number="form.yearsAtCompany"
+            type="number"
+            min="0"
+            step="0.5"
+            class="field__input"
+            placeholder="Ej: 2"
+            required
+          />
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="dependents">Dependientes</label>
+          <input
+            id="dependents"
+            v-model.number="form.dependents"
+            type="number"
+            min="0"
+            step="1"
+            class="field__input"
+            placeholder="Ej: 1"
+            required
+          />
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="extra-awards">Bonos adicionales aprobados (USD)</label>
+          <input
+            id="extra-awards"
+            v-model.number="form.extraAwards"
+            type="number"
+            min="0"
+            step="50"
+            class="field__input"
+            placeholder="Ej: 300"
+          />
+        </div>
+
+        <div class="divider" role="presentation"></div>
+
+        <div class="field">
+          <label class="field__label" for="api-url">Endpoint de la API</label>
+          <input
+            id="api-url"
+            v-model="apiUrl"
+            type="url"
+            class="field__input"
+            placeholder="http://127.0.0.1:8000/api/bonus"
+            required
+          />
+          <p class="field__help">Puedes modificar la URL si decides desplegar el servicio en otra dirección.</p>
+        </div>
+
+        <div v-if="formErrors.length" class="form-errors" role="alert">
+          <p>Revisa los siguientes puntos antes de continuar:</p>
+          <ul>
+            <li v-for="error in formErrors" :key="error">{{ error }}</li>
+          </ul>
+        </div>
+
+        <div class="actions">
+          <button class="button button--primary" type="submit" :disabled="isLoading">
+            {{ isLoading ? 'Calculando…' : 'Calcular bono' }}
           </button>
-          <button class="controls__button" type="button" @click="loadJobs({ useFallback: true })">
-            Mostrar datos de ejemplo
+          <button class="button" type="button" :disabled="!bonusResult" @click="downloadPdf">
+            Descargar PDF
           </button>
         </div>
-      </StateMessage>
+      </form>
 
-      <StateMessage
-        v-if="!errorMessage && filteredJobs.length === 0"
-        variant="empty"
-        title="Sin resultados que coincidan con tu búsqueda"
-        description="Prueba con otros términos o restablece el filtro."
-      >
-        <button class="controls__button" type="button" @click="searchTerm = ''">
-          Limpiar filtro
-        </button>
-      </StateMessage>
+      <section class="card card--highlight" aria-live="polite">
+        <h2 class="card__title">Resumen</h2>
 
-      <section v-if="filteredJobs.length > 0" class="results" aria-live="polite">
-        <JobCard v-for="job in filteredJobs" :key="job.id" :job="job" />
+        <p class="status" v-if="errorMessage">
+          <span class="status__indicator status__indicator--error" aria-hidden="true"></span>
+          {{ errorMessage }}
+        </p>
+
+        <div v-else-if="isLoading" class="status">
+          <span class="spinner" aria-hidden="true"></span>
+          Calculando bono con la API…
+        </div>
+
+        <template v-else-if="bonusResult">
+          <p class="summary__total">
+            Bono estimado:
+            <strong>{{ formatCurrency(bonusResult.totalBonus) }}</strong>
+          </p>
+
+          <ul class="summary__list">
+            <li v-for="item in formattedBreakdown" :key="item.label">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </li>
+          </ul>
+
+          <div class="summary__meta">
+            <p>
+              Última actualización:
+              <strong>{{ formatDate(lastUpdatedAt) || '—' }}</strong>
+            </p>
+            <p>
+              API consultada:
+              <strong>{{ apiUrl }}</strong>
+            </p>
+          </div>
+
+          <div v-if="bonusResult.recommendations?.length" class="summary__recommendations">
+            <h3>Recomendaciones</h3>
+            <ul>
+              <li v-for="message in bonusResult.recommendations" :key="message">{{ message }}</li>
+            </ul>
+          </div>
+        </template>
+
+        <p v-else class="status status--muted">
+          Ajusta los campos del formulario para estimar el bono del colaborador.
+        </p>
       </section>
-    </template>
+    </section>
   </main>
 </template>
 
 <style scoped>
 .page {
+  max-width: 1200px;
   margin: 0 auto;
-  max-width: 1080px;
-  padding: 3rem 1.5rem 4rem;
-  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  color: var(--text-primary);
+  padding: 2.5rem 1.5rem 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
 }
 
 .page__header {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 2.5rem;
+  gap: 0.75rem;
 }
 
 .page__title {
   margin: 0;
-  font-size: clamp(1.9rem, 2.8vw, 2.8rem);
-  font-weight: 800;
-  color: var(--accent-primary);
+  font-size: clamp(2rem, 3vw, 2.75rem);
+  color: var(--text-primary);
 }
 
 .page__description {
   margin: 0;
-  line-height: 1.7;
+  max-width: 60ch;
+  color: var(--text-muted);
 }
 
-.controls {
+.layout {
+  display: grid;
+  gap: 1.75rem;
+}
+
+@media (min-width: 960px) {
+  .layout {
+    grid-template-columns: minmax(320px, 420px) 1fr;
+    align-items: start;
+  }
+}
+
+.card {
+  background: white;
+  border-radius: 18px;
+  padding: 1.75rem;
+  box-shadow: 0 20px 50px -35px rgba(15, 23, 42, 0.45);
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  margin-bottom: 2.5rem;
-  padding: 1.5rem;
-  border-radius: 1.25rem;
+  gap: 1.25rem;
+}
+
+.card--highlight {
   background: var(--surface-elevated);
-  border: 1px solid var(--surface-border);
 }
 
-.controls__label {
-  font-weight: 600;
+.card__title {
+  margin: 0;
+  font-size: 1.3rem;
+  color: var(--text-primary);
 }
 
-.controls__row {
+.field {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.5rem;
 }
 
-.controls__input {
-  border-radius: 0.75rem;
+.field__label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.field__input {
+  padding: 0.75rem 0.9rem;
+  border-radius: 12px;
   border: 1px solid var(--surface-border);
-  padding: 0.75rem 1rem;
   font-size: 1rem;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.controls__input:focus {
+.field__input:focus {
   outline: none;
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 4px rgba(11, 114, 133, 0.15);
 }
 
-.controls__button {
-  align-self: flex-start;
-  background: transparent;
-  border: 1px solid var(--surface-border);
-  border-radius: 999px;
-  color: var(--text-primary);
-  cursor: pointer;
-  font-weight: 600;
-  padding: 0.6rem 1.4rem;
-  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
-}
-
-.controls__button:hover,
-.controls__button:focus-visible {
-  transform: translateY(-1px);
-  border-color: var(--accent-primary);
-}
-
-.controls__button--primary {
-  background: var(--accent-primary);
-  border-color: var(--accent-primary);
-  color: white;
-}
-
-.controls__button--primary:hover,
-.controls__button--primary:focus-visible {
-  background: var(--accent-primary-dark);
-  border-color: var(--accent-primary-dark);
-}
-
-.controls__help {
+.field__help {
   margin: 0;
   font-size: 0.9rem;
   color: var(--text-muted);
+}
+
+.divider {
+  border-bottom: 1px dashed var(--surface-border);
+  margin: 0.5rem 0 1rem;
+}
+
+.form-errors {
+  background: rgba(220, 53, 69, 0.1);
+  border: 1px solid rgba(220, 53, 69, 0.35);
+  border-radius: 12px;
+  padding: 1rem;
+  color: #b91c1c;
+  font-size: 0.95rem;
+}
+
+.form-errors ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
+  gap: 0.75rem;
 }
 
-.controls__link {
+.button {
   border: none;
-  background: none;
-  color: var(--accent-primary);
+  border-radius: 12px;
+  padding: 0.75rem 1.5rem;
   font-weight: 600;
   cursor: pointer;
-  padding: 0;
+  background: var(--surface-sunken);
+  color: var(--accent-primary);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
-.toolbar {
+.button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
+}
+
+.button:not(:disabled):hover,
+.button:not(:disabled):focus-visible {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 20px -18px rgba(15, 23, 42, 0.7);
+}
+
+.button--primary {
+  background: var(--accent-primary);
+  color: white;
+}
+
+.button--primary:not(:disabled):hover,
+.button--primary:not(:disabled):focus-visible {
+  background: var(--accent-primary-dark);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-muted);
+}
+
+.status--muted {
+  color: var(--text-muted);
+}
+
+.status__indicator {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  box-shadow: 0 0 0 6px rgba(11, 114, 133, 0.15);
+}
+
+.status__indicator--error {
+  background: #e53e3e;
+  box-shadow: 0 0 0 6px rgba(229, 62, 62, 0.15);
+}
+
+.spinner {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  border: 4px solid rgba(11, 114, 133, 0.2);
+  border-top-color: var(--accent-primary);
+  animation: spin 0.9s linear infinite;
+}
+
+.summary__total {
+  font-size: 1.6rem;
+  color: var(--text-primary);
+  margin: 0 0 1.25rem;
+}
+
+.summary__list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  margin-bottom: 1.75rem;
 }
 
-.toolbar__label {
-  font-weight: 600;
-}
-
-.toolbar__search {
-  border-radius: 999px;
-  border: 1px solid var(--surface-border);
-  padding: 0.65rem 1.25rem;
-  font-size: 1rem;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.toolbar__search:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 4px rgba(11, 114, 133, 0.15);
-}
-
-.toolbar__meta {
+.summary__list li {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+  justify-content: space-between;
+  background: white;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  box-shadow: inset 0 0 0 1px var(--surface-border);
+}
+
+.summary__meta {
+  display: grid;
+  gap: 0.5rem;
   font-size: 0.95rem;
   color: var(--text-muted);
 }
 
-.results {
-  display: grid;
-  gap: 1.5rem;
+.summary__recommendations {
+  margin-top: 1.5rem;
+  background: white;
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+  box-shadow: inset 0 0 0 1px var(--surface-border);
 }
 
-.state-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  margin-top: 0.5rem;
+.summary__recommendations h3 {
+  margin: 0 0 0.75rem;
+  color: var(--text-primary);
 }
 
-.loader {
-  width: 2.75rem;
-  height: 2.75rem;
-  border-radius: 50%;
-  border: 4px solid rgba(11, 114, 133, 0.2);
-  border-top-color: var(--accent-primary);
-  animation: spin 1s linear infinite;
+.summary__recommendations ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--text-muted);
 }
 
-@media (min-width: 640px) {
-  .controls__row {
-    flex-direction: row;
-    align-items: center;
-  }
-
-  .controls__row > *:first-child {
-    flex: 1;
-  }
-
-  .controls__button {
-    align-self: center;
-  }
-
-  .state-actions {
-    flex-direction: row;
-  }
-}
-
-@media (min-width: 720px) {
-  .results {
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+@media (max-width: 640px) {
+  .card {
+    padding: 1.25rem;
   }
 }
 
