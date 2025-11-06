@@ -23,10 +23,16 @@ disponible.
 
 ## Puesta en marcha
 
+Desde la raíz del repositorio, entra primero a la carpeta `frontend` para ejecutar los comandos:
+
 ```bash
+cd frontend
 npm install
 npm run dev
 ```
+
+> 💡 En Windows PowerShell también necesitas posicionarte en la carpeta `frontend` antes de correr
+> `npm install`. Por ejemplo: `cd .\frontend`.
 
 El servidor de desarrollo quedará disponible en `http://localhost:5173`. La aplicación ejecuta una
 solicitud HTTP a la API configurada en la variable `VITE_FASTAPI_URL` y, en caso de no encontrarla,
