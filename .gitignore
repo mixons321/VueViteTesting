@@ -1,0 +1,15 @@
+# Node / Vite
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Env files
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# Editor folders
+.vscode/
+.idea/
+.DS_Store
